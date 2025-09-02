@@ -1,0 +1,269 @@
+using BrokeProtocol.API;
+using BrokeProtocol.Entities;
+using BrokeProtocol.Managers;
+using System.Collections.Generic;
+
+public class GangManager : Plugin
+{
+    public GangManager()
+    {
+        Info = new PluginInfo("GangManager", "Allows players to create and manage gangs, gang wars, gang market, and easy-access menu.");
+    }
+
+    private Dictionary<string, Gang> gangs = new Dictionary<string, Gang>();
+
+    [Command]
+    public void creategang(ShPlayer player, string gangName)
+    {
+        const int gangCost = 750000;
+        if (player.MyMoney < gangCost)
+        {
+            player.Message("You do not have enough money to create a gang.");
+            return;
+        }
+        if (gangs.ContainsKey(gangName))
+        {
+            player.Message("This gang name already exists.");
+            return;
+        }
+        foreach (var gang in gangs.Values)
+        {
+            if (gang.IsMember(player))
+            {
+                player.Message("You are already in a gang.");
+                return;
+            }
+        }
+        player.TransferMoney(-gangCost);
+        gangs.Add(gangName, new Gang(gangName, player));
+        player.Message($"Gang '{gangName}' created! You are the leader.");
+    }
+
+    [Command]
+    public void invitegang(ShPlayer leader, ShPlayer target, string gangName)
+    {
+        if (!gangs.TryGetValue(gangName, out Gang gang))
+        {
+            leader.Message("Gang does not exist.");
+            return;
+        }
+        if (gang.Leader != leader)
+        {
+            leader.Message("Only the gang leader can invite members.");
+            return;
+        }
+        if (gang.IsMember(target))
+        {
+            leader.Message("Player is already in your gang.");
+            return;
+        }
+        gang.Invite(target);
+        target.Message($"{leader.username} has invited you to join gang '{gangName}'. Use /acceptgang {gangName} to join.");
+        leader.Message($"Invitation sent to {target.username}.");
+    }
+
+    [Command]
+    public void acceptgang(ShPlayer player, string gangName)
+    {
+        if (!gangs.TryGetValue(gangName, out Gang gang))
+        {
+            player.Message("Gang does not exist.");
+            return;
+        }
+        if (!gang.HasInvite(player))
+        {
+            player.Message("You have not been invited to this gang.");
+            return;
+        }
+        foreach (var g in gangs.Values)
+        {
+            if (g.IsMember(player))
+            {
+                player.Message("You are already in a gang.");
+                return;
+            }
+        }
+        gang.AddMember(player, "Member");
+        gang.RemoveInvite(player);
+        player.Message($"You joined the gang '{gangName}'!");
+    }
+
+    [Command]
+    public void setgangrank(ShPlayer leader, ShPlayer target, string gangName, string rank)
+    {
+        if (!gangs.TryGetValue(gangName, out Gang gang))
+        {
+            leader.Message("Gang does not exist.");
+            return;
+        }
+        if (gang.Leader != leader)
+        {
+            leader.Message("Only the gang leader can set ranks.");
+            return;
+        }
+        if (!gang.IsMember(target))
+        {
+            leader.Message("Player is not in your gang.");
+            return;
+        }
+        gang.SetRank(target, rank);
+        leader.Message($"{target.username} is now '{rank}' in '{gangName}'.");
+        target.Message($"Your rank in '{gangName}' is now '{rank}'.");
+    }
+
+    [Command]
+    public void gangwar(ShPlayer leader, string gangName, string targetGangName)
+    {
+        if (!gangs.ContainsKey(gangName) || !gangs.ContainsKey(targetGangName))
+        {
+            leader.Message("One or both gangs do not exist.");
+            return;
+        }
+        if (gangs[gangName].Leader != leader)
+        {
+            leader.Message("Only the gang leader can declare war.");
+            return;
+        }
+        gangs[gangName].StartWar(targetGangName);
+        gangs[targetGangName].StartWar(gangName);
+        leader.Message($"War declared between '{gangName}' and '{targetGangName}'!");
+    }
+
+    [Command]
+    public void gangmenu(ShPlayer player)
+    {
+        string gangName = GetPlayerGang(player);
+        if (gangName != null && gangs.TryGetValue(gangName, out Gang gang))
+        {
+            string menuText = $"Gang Menu for '{gangName}':\n" +
+                "- /invitegang <player> <gang>\n" +
+                "- /setgangrank <player> <gang> <rank>\n" +
+                "- /gangwar <yourGang> <targetGang>\n" +
+                "- /gangmarket <gang>\n" +
+                "- /gangsell <item> <amount>\n";
+            player.Message(menuText);
+        }
+        else
+        {
+            player.Message("Join a gang to access gang menu.");
+        }
+    }
+
+    [Command]
+    public void gangmarket(ShPlayer player, string gangName)
+    {
+        if (!gangs.TryGetValue(gangName, out Gang gang) || !gang.IsMember(player))
+        {
+            player.Message("You must be in the gang to access its market.");
+            return;
+        }
+        player.Message($"Gang Market for '{gangName}':\n" +
+            string.Join("\n", gang.GetMarketItems()));
+    }
+
+    [Command]
+    public void gangsell(ShPlayer player, string itemName, int amount)
+    {
+        string gangName = GetPlayerGang(player);
+        if (gangName == null || !gangs.TryGetValue(gangName, out Gang gang))
+        {
+            player.Message("You must be in a gang to use /gangsell.");
+            return;
+        }
+        int owned = player.MyInventory.GetItemTotal(itemName);
+        if (owned < amount || amount <= 0)
+        {
+            player.Message($"You do not have {amount}x {itemName} to sell.");
+            return;
+        }
+        int price = GetItemPrice(itemName) * amount;
+        player.MyInventory.Remove(itemName, amount);
+        player.TransferMoney(price);
+        gang.AddMarketItem(itemName, amount);
+        player.Message($"Sold {amount}x {itemName} to your gang for ${price}.");
+    }
+
+    private string GetPlayerGang(ShPlayer player)
+    {
+        foreach (var kvp in gangs)
+        {
+            if (kvp.Value.IsMember(player)) return kvp.Key;
+        }
+        return null;
+    }
+
+    private int GetItemPrice(string itemName)
+    {
+        Dictionary<string, int> prices = new Dictionary<string, int>
+        {
+            { "Pistol", 1000 },
+            { "Rifle", 5000 },
+            { "Knife", 500 },
+            { "Drugs", 2000 }
+        };
+        return prices.ContainsKey(itemName) ? prices[itemName] : 1000;
+    }
+}
+
+public class Gang
+{
+    public string Name { get; }
+    public ShPlayer Leader { get; }
+    private Dictionary<ShPlayer, string> members = new Dictionary<ShPlayer, string>();
+    private Dictionary<ShPlayer, bool> invites = new Dictionary<ShPlayer, bool>();
+    private Dictionary<string, int> marketItems = new Dictionary<string, int>();
+    private HashSet<string> warWith = new HashSet<string>();
+
+    public Gang(string name, ShPlayer leader)
+    {
+        Name = name;
+        Leader = leader;
+        members.Add(leader, "Leader");
+    }
+
+    public bool IsMember(ShPlayer player) => members.ContainsKey(player);
+
+    public void AddMember(ShPlayer player, string rank)
+    {
+        members[player] = rank;
+    }
+
+    public void SetRank(ShPlayer player, string rank)
+    {
+        if (members.ContainsKey(player))
+            members[player] = rank;
+    }
+
+    public void Invite(ShPlayer player)
+    {
+        invites[player] = true;
+    }
+
+    public bool HasInvite(ShPlayer player) => invites.ContainsKey(player);
+
+    public void RemoveInvite(ShPlayer player)
+    {
+        invites.Remove(player);
+    }
+
+    public void StartWar(string otherGang)
+    {
+        warWith.Add(otherGang);
+    }
+
+    public void AddMarketItem(string itemName, int amount)
+    {
+        if (marketItems.ContainsKey(itemName))
+            marketItems[itemName] += amount;
+        else
+            marketItems[itemName] = amount;
+    }
+
+    public List<string> GetMarketItems()
+    {
+        List<string> list = new List<string>();
+        foreach (var kvp in marketItems)
+            list.Add($"{kvp.Value}x {kvp.Key}");
+        return list;
+    }
+}
